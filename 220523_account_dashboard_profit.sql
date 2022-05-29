@@ -1,5 +1,15 @@
 -- sample account  '0x00000000034b55ebd82cde9b38a85ab0978b7a47'
+-- 0x86Ccd73E2dE200ab3e15Ee0BD5865f0B405F52b9
 -- dashboard setting  lower({{account_address}})
+
+
+
+
+
+
+
+
+
 
 
 /*****************************************************************/
@@ -17,7 +27,7 @@ with drv as (
 	-- account balance history, account + start_at level
 	select *
 	from dw.dws_token_balance_history_eth_dil
-	where account_address = '0x00000000034b55ebd82cde9b38a85ab0978b7a47'
+	where account_address = lower({{account_address}})
 	and end_at > DATE_SUB(date(now()),30)
 )
 ,account_token_bal as (
@@ -109,8 +119,15 @@ on a.partition_date = c.dt
 
 
 
+
+
+
+
+
+
+
 /**************************************************************************/
-/*********   part1 account nft balance calculation (only sold)  ***********/
+/*********   part2 account nft balance calculation (only sold)  ***********/
 /**************************************************************************/
 
 with drv as (
@@ -175,15 +192,84 @@ order by 1
 
 
 
-/**************************************************************************/
-/************   part1 account nft balance calculation (hold)  *************/
-/**************************************************************************/
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**************************************************************************/
+/*********   part3 account nft balance calculation (hold + mint)  *********/
+/**************************************************************************/
 with drv as (
 	-- partition date driver table
 	select dt as partition_date
 	from dim_date_di
 	where dt between DATE_SUB(date(now()),30) and date(now())
+)
+,account_nft_trade_log as (
+	select from_address as account_address
+					,token_address
+					,token_ids
+					,token_num
+					,-1.0*trade_eth_value as trade_eth_value
+					,currency_symbol
+					,trade_time
+					,transaction_hash
+					,'sold' as trade_type
+	from dw.dwb_nft_trade_eth_detail_hi
+	where from_address = '0x00000000034b55ebd82cde9b38a85ab0978b7a47'
+
+	union all
+	select to_address as account_address
+					,token_address
+					,token_ids
+					,token_num
+					,trade_eth_value as trade_eth_value
+					,currency_symbol
+					,trade_time
+					,transaction_hash
+					,'buy' as trade_type
+	from dw.dwb_nft_trade_eth_detail_hi
+	where to_address = '0x00000000034b55ebd82cde9b38a85ab0978b7a47'
+)
+,account_nft_trade_sum as (
+	select account_address
+					,partition_date
+					,total_traded_eth
+					,sum(total_traded_eth) over(order by partition_date asc) as cum_nft_cost 
+	from
+	(
+		SELECT account_address
+					,date(trade_time) as partition_date
+					,sum(trade_eth_value) as total_traded_eth
+		FROM account_nft_trade_log
+		group by 1,2
+	) as a
+)
+,account_nft_cost_res as (
+	select account_address,partition_date,cum_nft_cost
+	from
+	(
+		SELECT a.partition_date
+			,b.account_address
+			,b.cum_nft_cost
+			,row_number() over(partition by a.partition_date order by b.partition_date desc) as rnk
+		FROM drv as a
+		,account_nft_trade_sum as b
+		where a.partition_date >= b.partition_date
+	) as t
+	where rnk = 1
 )
 ,account_nft_bal_drv as (
 	-- account balance history, account + start_at level
@@ -206,11 +292,78 @@ with drv as (
 	and a.partition_date < b.end_at
     and `value` > 0
 )
-select a.account_address,a.partition_date
-			,sum(`value`*low_eth_price) as nft_eth_bal
-			,sum(`value`*low_usd_price) as nft_usd_bal
-from account_nft_bal as a
-join dw.dwb_nft_price_eth_byday_hi as b
-on a.token_address = b.token_address
-and a.partition_date = b.dt
-group by 1,2
+,account_nft_bal_res as (
+	select a.account_address,a.partition_date
+				,sum(`value`*low_eth_price) as nft_eth_bal
+				,sum(`value`*low_usd_price) as nft_usd_bal
+	from account_nft_bal as a
+	join dw.dwb_nft_price_eth_byday_hi as b
+	on a.token_address = b.token_address
+	and a.partition_date = b.dt
+	group by 1,2
+)
+,mint_txn as 
+(
+	select id,account_address,token_address,token_id,value,gas_value,cost,is_mint,ts
+	from dw.dwb_nft_transfer_detail_eth_hi
+	where id in (
+		select id
+		from dw.dwb_nft_transfer_detail_eth_hi
+		where account_address = '0x00000000034b55ebd82cde9b38a85ab0978b7a47'
+		and is_mint = 1
+		group by 1
+	)
+)
+,mint_cost as (
+	select account_address
+			,partition_date
+			,mint_cost
+			,sum(mint_cost) over(order by partition_date asc) as cum_mint_cost
+	from
+	(
+		select a.account_address
+				,date(a.ts) as partition_date
+				,sum(b.cost+b.gas_value) as mint_cost
+		from mint_txn as a
+		left join
+		(
+			select id
+				,count(*) as n
+				,2*max(cost)/count(*) as cost
+				,2*max(gas_value)/count(*) as gas_value
+			from mint_txn
+			group by 1
+		) as b
+		on a.id = b.id
+		where is_mint = 1
+		and account_address = '0x00000000034b55ebd82cde9b38a85ab0978b7a47'
+		group by 1,2
+	) as a
+)
+,mint_cost_res as (
+	select account_address,partition_date,cum_mint_cost
+	from
+	(
+		select a.partition_date
+			,b.account_address
+			,b.cum_mint_cost
+			,row_number() over(partition by a.partition_date order by b.partition_date desc) as rnk
+		from drv as a
+		,mint_cost as b
+		where a.partition_date >= b.partition_date
+	) as t
+	where rnk = 1
+)
+
+select a.account_address
+		,a.partition_date
+		,a.nft_eth_bal
+		,a.nft_usd_bal
+		,b.cum_nft_cost as nft_eth_buy_cost
+		,c.cum_mint_cost as nft_eth_mint_cost
+from account_nft_bal_res as a
+left join account_nft_cost_res as b
+on a.partition_date = b.partition_date
+left join mint_cost_res as c
+on a.partition_date = c.partition_date
+;
