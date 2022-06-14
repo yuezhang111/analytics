@@ -255,3 +255,34 @@ left join
 on a.account_address = b.account_address
 group by 1
 order by 1
+
+
+
+
+/*****************************************************************/
+/************************   part3 twitter   **********************/
+/*****************************************************************/
+
+-- token's official Twitter address
+select concat('@',username) as displayname
+    ,username
+from dw.dws_twitter_metrics_ha
+where twitter_id = (
+    select twitter_id
+    from dw.dwb_token_coingecko_detail_hi
+    where token_address = lower({{token_address}})
+)
+
+
+-- token's official Twitter followers
+select followers_count
+    ,date(metrics_updated_at) as metrics_updated_dt
+from dw.dwb_twitter_user_info_snapshot_di
+where twitter_id = (
+	select twitter_id
+	from dw.dwb_token_coingecko_detail_hi
+	where token_address = lower({{token_address}})
+)
+and metrics_updated_at >= DATE_SUB(date(now()),2)
+order by metrics_updated_at asc
+
