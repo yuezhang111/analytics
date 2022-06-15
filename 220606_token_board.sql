@@ -148,32 +148,32 @@ order by `value` desc
 with dt_drv as (
 	select dt as partition_date
 	from dim_date_di
-	where dt between DATE_SUB(date(now()),30) and date(now())
+	where dt between DATE_SUB(date(now()),90) and date(now())
 )
 ,token_bal_drv as (
     select a.account_address,a.start_at,a.end_at,a.balance
         ,if(c.address is null,0,1) as is_contract
     from
     (
-    	select account_address,start_at,end_at,balance
+        select account_address,start_at,end_at,balance
     	from dw.dws_token_balance_history_eth_dil
     	where token_address = lower({{token_address}})
-    	and end_at > DATE_SUB(date(now()),30)
-    	and balance > power(10,-10)
+    		and end_at > DATE_SUB(date(now()),90)
+    		and balance > power(10,-10)
     ) as a
     left join prod.contracts c
     on a.account_address = c.address
     and c.chain='eth'
 )
 select a.partition_date
-	,count(distinct b.account_address) as token_holder_cnt
+    ,account_address
+    ,balance
 from dt_drv as a
 ,token_bal_drv as b
 where a.partition_date >= b.start_at
 and a.partition_date < b.end_at
 and b.is_contract = 0
-group by 1
-order by 1 desc
+group by 1,2,3
 
 
 -- Token top holder Trade Log
