@@ -7,7 +7,7 @@
 /*********************   part0 nft summary   *********************/
 /*****************************************************************/
 
--- dw.drpt_nft_general_ranking_di (WIP)
+-- dw.drpt_nft_general_ranking_di
 select a.token_address
 	,c.opensea_name
 	,a.total_value
@@ -67,9 +67,15 @@ on a.token_address = e.token_address
 /*******************   part1 nft basic info   ********************/
 /*****************************************************************/
 
+-- opensea name
+select opensea_name
+from dw.dwb_nft_opensea_detail_di
+where token_address = lower({{nft_address}})
 
 
-
+-- realtime floor price
+select 
+from dw.dwb_nft_price_eth_byday_hi
 
 
 /*****************************************************************/
