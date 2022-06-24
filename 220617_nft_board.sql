@@ -70,7 +70,7 @@ on a.token_address = e.token_address
 
 -- opensea name
 select opensea_name
-from dw.dwb_nft_opensea_detail_di
+from dw.dim_nft_tokens
 where token_address = lower({{nft_address}})
 
 
@@ -163,12 +163,233 @@ where token_address = lower({{nft_address}})
 /**********************   part2 nft trade   **********************/
 /*****************************************************************/
 
+-- daily floor price and trade volume
+select dt,low_eth_price,trading_eth_volume
+from dw.dwb_nft_price_eth_byday_hi
+where dt >= DATE_SUB(now(),30)
+and token_address = lower({{nft_address}})
 
 
+-- Top NFT Holder Balance Coverage
+select rnk
+    ,sum(cum_bal)/max(total_bal) as cum_bal
+from
+(
+    select account_address,hold_value,rnk,cum_bal
+    	,sum(hold_value) over() as total_bal
+    from
+    (
+    	select account_address
+    		,cast(sum(cast(`value` as LARGEINT)) as bigint) as hold_value
+    		,row_number() over(order by sum(cast(`value` as LARGEINT)) desc) as rnk
+    	    ,cast(sum(sum(cast(`value` as LARGEINT))) over(
+        	        order by sum(cast(`value` as LARGEINT)) desc 
+        	        Rows Between Unbounded Preceding and Current Row)
+    	     as bigint) as cum_bal
+    	from dw.dws_nft_balance_eth
+    	where token_address = lower({{nft_address}})
+    	and `value` > 0
+    	and account_address not in (
+        	'0x0000000000000000000000000000000000000000',
+        	'0x000000000000000000000000000000000000dead')
+    	group by 1
+    ) as a
+) as t
+group by 1
+order by 1 asc
+
+
+-- solder address vs buyin address
+select DATE(trade_time) as trade_dt
+	,count(distinct transaction_hash) as txn_cnt
+	,count(distinct from_address) as solders
+	,count(distinct to_address) as buyers
+from dw.dwb_nft_trade_eth_detail_hi
+where trade_time >= DATE_SUB(now(),30)
+and token_address = lower({{nft_address}})
+group by 1
+order by 1 asc
+
+
+-- NFT holding Pieces and Days
+select avg_holding_days,holding_pieces
+    ,count(*) as account_cnt
+from
+(
+    select account_address
+        ,round(avg(value*datediff(now(),last_transfer_in))) as avg_holding_days
+        ,sum(value) as holding_pieces
+    from dw.dws_nft_balance_eth
+    where token_address = lower({{token_address}})
+    and account_address not in (
+    	'0x0000000000000000000000000000000000000000',
+    	'0x000000000000000000000000000000000000dead')
+    and value > 0
+    group by 1
+) as n
+group by 1,2
+
+
+-- trade profit log
+with nft_sell_log as (
+    select from_address as account_address
+        ,token_address
+        ,token_ids
+        ,token_num
+        ,trade_eth_value
+        ,buyer_pay_amount,seller_receive_amount
+        ,currency_symbol
+        ,null as cost, null as gas_value
+        ,trade_time
+        ,transaction_hash
+        ,ROW_NUMBER() OVER (PARTITION BY token_address, token_ids ORDER BY trade_time asc) AS sell_rn
+    from dw.dwb_nft_trade_eth_detail_hi
+    where token_address = lower({{account_address}})
+)
+,nft_buy_log as (
+    select to_address as account_address
+        ,token_address
+        ,token_ids
+        ,token_num
+        ,trade_eth_value
+        ,buyer_pay_amount,seller_receive_amount
+        ,currency_symbol
+        ,null as cost, null as gas_value
+        ,trade_time
+        ,transaction_hash
+        ,ROW_NUMBER() OVER (PARTITION BY token_address, token_ids ORDER BY trade_time asc) AS buy_rn
+    from dw.dwb_nft_trade_eth_detail_hi
+    where token_address = lower({{account_address}})
+)
+SELECT s.token_address
+    ,s.token_ids
+    ,s.token_num
+    ,ifnull(coalesce(b.buyer_pay_amount,m.cost+m.gas_value), 0) as bought_price
+    ,s.buyer_pay_amount as sale_price
+    ,s.buyer_pay_amount - ifnull(coalesce(b.buyer_pay_amount,m.cost+m.gas_value), 0) as profit
+    ,coalesce(b.trade_time,m.ts) as bought_time
+    ,coalesce(b.transaction_hash,m.transaction_hash) as bought_txn
+    ,coalesce(b.account_address,m.account_address) as bought_account_address
+    ,s.trade_time as sale_time
+    ,s.transaction_hash as sale_txn
+    ,s.account_address as sale_account_address
+    ,case when b.transaction_hash is not null and b.account_address = s.account_address then 'buy'
+            when b.transaction_hash is not null and b.account_address <> s.account_address then 'OTC buy'
+            when m.transaction_hash is not null and m.account_address = s.account_address then 'mint'
+            when m.transaction_hash is not null and m.account_address <> s.account_address then 'master mint'
+            else 'transfer' end as buy_type
+from nft_sell_log as s
+left join nft_buy_log as b
+ON b.token_address = s.token_address
+AND b.token_ids = s.token_ids
+AND b.buy_rn = s.sell_rn - 1
+left join 
+(
+    select account_address,token_address,token_id
+        ,mint_time as ts,block_number,transaction_hash
+        ,mint_amount as `value`,gas_cost as gas_value,mint_cost as cost
+    from dw.dwb_nft_mint_detail_eth_hi
+    where token_address = lower({{account_address}})
+)as m
+on s.token_address = m.token_address
+and s.token_ids = m.token_id
+[[
+where s.account_address = lower({{acct}})
+or b.account_address = lower({{acct}})
+or m.account_address = lower({{acct}})
+]]
+order by sale_time desc
 
 
 /*****************************************************************/
 /*********************   part3 nft holding   *********************/
 /*****************************************************************/
 
+-- NFT holder 7d Activities
+select b.token_address
+	,max(opensea_name) as opensea_name
+	,max(create_time) as nft_creat_time
+	,count(distinct a.account_address) as txn_acct_cnt
+	,sum(bought_value) as bought_value_7d
+	,sum(sold_value) as sold_value_7d
+	,sum(mint_value) as mint_value_7d
+from
+(
+	select account_address
+		,sum(`value`) as hold_value
+	from dw.dws_nft_balance_eth
+	where token_address = lower({{nft_address}})
+	and value > 0
+	and account_address not in (
+	'0x0000000000000000000000000000000000000000',
+	'0x000000000000000000000000000000000000dead')
+	group by 1
+) as a
+inner join
+(
+	select account_address,aa.token_address
+	    ,max(bb.opensea_name) as opensea_name
+	    ,max(bb.create_time) as create_time
+	    ,sum(abs(value)) as trade_vol
+	    ,sum(value) as net_value
+		,sum(case when value>0 and is_mint = 0 then value else 0 end) as bought_value
+		,sum(case when value<0 then value else 0 end) as sold_value
+		,sum(case when is_mint >= 1 then value else 0 end) as mint_value
+	from dw.dwb_nft_transfer_detail_eth_hi as aa
+	left join dw.dim_nft_tokens as bb
+    on aa.token_address = bb.token_address
+    where ts > DATE_SUB(now(),7)
+	and aa.token_address <> lower({{nft_address}})
+	group by 1,2
+) as b
+on a.account_address = b.account_address
+group by 1
+order by txn_acct_cnt desc
 
+
+-- nft holder high concentration projects
+select a.token_address
+	,max(opensea_name) as opensea_name
+	,max(create_time) as create_time
+	,max(seven_day_volume_rk) as seven_day_volume_rk
+	,count(a.account_address) as holder_cnt
+	,count(b.account_address) as intersection_holder_cnt
+	,1.0*count(b.account_address)/count(a.account_address) as holder_concentration
+	,cast(sum(a.balance_value) as bigint) as supply_cnt
+	,cast(sum(case when b.account_address is not null then balance_value else 0 end) as bigint) as intersection_supply_cnt
+	,1.0*sum(case when b.account_address is not null then balance_value else 0 end)/sum(a.balance_value) as supply_concentration
+from
+(
+    select aa.account_address
+        ,aa.token_address
+		,max(bb.opensea_name) as opensea_name
+		,max(bb.create_time) as create_time
+		,max(bb.seven_day_volume_rk) as seven_day_volume_rk
+        ,sum(cast(aa.`value` as largeint)) as balance_value
+    from dw.dws_nft_balance_eth as aa
+    left join dw.dwm_nft_detail_ha as bb
+    on aa.token_address = bb.token_address
+    where aa.`value` > 0
+		and aa.token_address != lower({{nft_address}})
+		and account_address not in (
+    	'0x0000000000000000000000000000000000000000',
+    	'0x000000000000000000000000000000000000dead')
+    group by 1,2
+) as a
+left join
+(
+	select account_address
+		,sum(cast(`value` as largeint)) as hold_value
+	from dw.dws_nft_balance_eth
+	where token_address = lower({{nft_address}})
+	and value > 0
+	and account_address not in (
+    	'0x0000000000000000000000000000000000000000',
+    	'0x000000000000000000000000000000000000dead')
+	group by 1
+) as b
+on a.account_address = b.account_address
+group by 1
+having max(seven_day_volume_rk) < 5000
+and count(a.account_address) > 100
+order by holder_concentration+supply_concentration desc
