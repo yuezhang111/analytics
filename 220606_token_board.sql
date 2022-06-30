@@ -286,3 +286,50 @@ where twitter_id = (
 and metrics_updated_at >= DATE_SUB(date(now()),2)
 order by metrics_updated_at asc
 
+
+-- Twitter kol Interations
+-- daily twitter kol interations
+select drv.dt as partition_date
+    ,coalesce(interact_user_cnt,0) as interact_user_cnt
+from dw.dim_date_di as drv
+left join
+(
+    select date(a.interact_ts) as interact_date
+        ,count(distinct a.interact_twitter_id) as interact_user_cnt
+    from dw.dm_twitter_interaction_log_di as a
+    left join dw.dwb_twitter_user_info_ha as b
+    on a.interact_twitter_id = b.twitter_id
+    where a.twitter_id = (
+        select twitter_id
+        from dw.dwb_token_coingecko_detail_hi
+        where token_address = lower({{token_address}})
+    )
+    and date(a.interact_ts) > date_sub(now(),30)
+    and b.followers_count > 1000
+    group by 1
+) as t
+on drv.dt = t.interact_date
+where drv.dt > date_sub(now(),30)
+and drv.dt <= now()
+
+
+-- token's daily activities
+select b.username
+    ,b.followers_count
+	,date(a.interact_ts) as interact_dt
+	,a.interaction_type
+	,a.tweet_id
+	,concat(substring(a.text,1,30),'...') as text
+	,a.created_at
+from dw.dm_twitter_interaction_log_di as a
+left join dw.dwb_twitter_user_info_ha as b
+on a.interact_twitter_id = b.twitter_id
+where a.twitter_id = (
+		select twitter_id
+		from dw.dwb_token_coingecko_detail_hi
+		where token_address = lower({{token_address}})
+)
+and date(a.interact_ts) > date_sub(now(),30)
+and b.followers_count > 1000
+and interaction_type = 'like'
+order by followers_count+datediff(created_at,now())*2000 desc
