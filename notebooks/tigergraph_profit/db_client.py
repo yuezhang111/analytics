@@ -2,6 +2,7 @@ import os
 import json
 import pymysql
 import requests
+import dataclasses
 from requests.auth import HTTPBasicAuth
 
 def check_and_parse(result: requests.Response):
@@ -55,17 +56,48 @@ class DorisClient(object):
         res_rows = cursor.fetchall()
         field_names = [i[0] for i in cursor.description]
         return res_rows,field_names
-    
 
-class TgGraphClient(object):
-    def __init__(self, ip, user, passwd, graph_name, protocol="http",):
-        self.protocol = protocol
-        self.ip = ip
+
+@dataclasses.dataclass
+class TGToken:
+    token: str = ''
+    expiration: int = 0
+
+    def is_expired(self):
+        return time.time() >= self.expiration
+
+
+class TigerGraphClient(object):
+    def __init__(self, host: str, rest_port: int, gsql_port: int, user: str, passwd: str, graph_name: str):
+        self.host = host
+        self.rest_port = rest_port
+        self.gsql_port = gsql_port
         self.user = user
         self.passwd = passwd
         self.graph_name = graph_name
+        self.token = TGToken()
         
-    def insert(self, entities):
-        url = '%s://%s:9000/graph/%s' % (self.protocol, self.ip, self.graph_name)
-        result = requests.post(url, json=entities, auth=HTTPBasicAuth(self.user, self.passwd))
+    def __request_token(self):
+        url = 'http://{}:{}/requesttoken'.format(self.host, self.rest_port)
+        data = {'graph': self.graph_name}
+        result = requests.post(url, json=data, auth=HTTPBasicAuth(self.user, self.passwd))
+        result = check_and_parse(result)
+        self.token.token = result['results']['token']
+        self.token.expiration = result['expiration']
+        
+    def with_token(fn):
+        def wrap(self, *args, **kwargs):
+            if self.token.is_expired():
+                self.__request_token()
+            return fn(self, *args, **kwargs)
+
+        return wrap
+    
+    @with_token
+    def insert(self, entities=None, opt = None):
+        url = 'http://{}:{}/graph/{}'.format(self.host, self.rest_port, self.graph_name)
+        headers = {
+            'Authorization': 'Bearer {}'.format(self.token.token)
+        }
+        result = requests.post(url, params=opt, json=entities, headers=headers)
         return check_and_parse(result)
