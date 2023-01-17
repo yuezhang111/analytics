@@ -1,3 +1,4 @@
+import sys
 import time
 import requests
 import pandas as pd
@@ -154,7 +155,6 @@ def with_token(fn):
         if time.time() >= self.expiration - 60:  # 提前60s认为过期
             self.request_token()
         return fn(self, *args, **kwargs)
-
     return wrap
 
 
@@ -178,13 +178,7 @@ class Client(object):
         self.expiration = result['expiration']
 
     @with_token
-    def run_query(self, query_name: str, address_list: list):
-        condition_str = ""
-        for address in address_list:
-            if condition_str == "":
-                condition_str += "address=" + address
-            else:
-                condition_str += "&address=" + address
+    def run_query(self, query_name: str, condition_str: str):
         url = 'http://{}:{}/query/{}/{}?{}'.format(
             self.host, self.rest_port, self.graph_name, query_name, condition_str
         )
@@ -196,6 +190,15 @@ class Client(object):
         return result.json()
 
 
+def get_nft_profit_condition_str(address_list):
+    condition_str = ""
+    for address in address_list:
+        if condition_str == "":
+            condition_str += "address=" + address
+        else:
+            condition_str += "&address=" + address
+    return condition_str
+
 
 def nft_profit_check(input_address_list):
     c = Client(tg_host, tg_port, tg_user, tg_passwd, 'nft_profit')
@@ -203,14 +206,15 @@ def nft_profit_check(input_address_list):
         'addresses', 'profit_prod', 'profit_test', 'run_ts_prod', 'run_ts_test'
     ])
     for address_list in input_address_list:
+        address_condition_str = get_nft_profit_condition_str(address_list)
         start_ts_prod = time.time()
-        res_prod = c.run_query('nft_profit_calculation', address_list)
+        res_prod = c.run_query('nft_profit_calculation', address_condition_str)
         end_ts_prod = time.time()
         run_ts_prod = end_ts_prod - start_ts_prod
         profit_prod = res_prod['results'][0]['nft_cum_profit']
         try:
             start_ts_test = time.time()
-            res_test = c.run_query('nft_profit_calculation_test', address_list)
+            res_test = c.run_query('nft_profit_calculation_test', address_condition_str)
             end_ts_test = time.time()
             run_ts_test = end_ts_test - start_ts_test
             profit_test = res_test['results'][0]['nft_cum_profit']
@@ -222,8 +226,9 @@ def nft_profit_check(input_address_list):
                     if nft_profit_prod != nft_profit_test:
                         print('unmatched nfts:', address_list, nft, nft_profit_prod, nft_profit_test)
         except:
+            print(res_prod)
             print(res_test)
-            continue
+            break
         else:
             row_df = pd.DataFrame([
                 {'addresses': address_list,
@@ -238,6 +243,66 @@ def nft_profit_check(input_address_list):
     return df
 
 
+def get_performance_check_condition_str(input_address, input_nft, is_new_algo):
+    condition_str = ""
+    for address in input_address:
+        if condition_str == "":
+            condition_str += "input_account=" + address
+        else:
+            condition_str += "&input_account=" + address
+    for nft in input_nft:
+        condition_str += "&input_nft=" + nft
+    condition_str += "&is_new_algo=" + is_new_algo
+    return condition_str
+
+
+def nft_profit_performance_check(input_address):
+    # check nft_profit_prod 计算时长
+    c = Client(tg_host, tg_port, tg_user, tg_passwd, 'nft_profit')
+    address_condition_str = get_nft_profit_condition_str(input_address)
+    start_ts_prod = time.time()
+    res_prod = c.run_query('nft_profit_calculation', address_condition_str)
+    end_ts_prod = time.time()
+    # print(res_prod)
+    print(end_ts_prod - start_ts_prod)
+
+    # 循环该地址所有的nft，打印每个nft的计算时长，计算时长输出最大的nft
+    res = []
+    for nft in res_prod['results'][1]['@@top_projects'].keys():
+        nft_list = [nft]
+        performance_condition_prod = get_performance_check_condition_str(
+            input_address,
+            nft_list,
+            'false'
+        )
+        performance_condition_test = get_performance_check_condition_str(
+            input_address,
+            nft_list,
+            'true'
+        )
+        # print(performance_condition_prod, performance_condition_test)
+        print(nft)
+        start_ts_nft_prod = time.time()
+        nft_res_prod = c.run_query('test_account_nft', performance_condition_prod)
+        end_ts_nft_prod = time.time()
+        start_ts_nft_test = time.time()
+        nft_res_test = c.run_query('test_account_nft', performance_condition_test)
+        end_ts_nft_test = time.time()
+        # print(nft_res_prod,nft_res_test)
+        run_time_prod = end_ts_nft_prod-start_ts_nft_prod
+        run_time_test = end_ts_nft_test-start_ts_nft_test
+        print(nft_res_prod['results'][0]['nft_cum_profit'],
+              nft_res_test['results'][0]['nft_cum_profit'],
+              run_time_prod,
+              run_time_test
+        )
+        res.append({nft:(run_time_prod, run_time_test)})
+    return res
+
+
 if __name__ == '__main__':
-    check_df = nft_profit_check(purr_top_list)
-    check_df.to_excel('nft_profit_check.xlsx', sheet_name='nft_profit_check')
+    performance_test_address = sys.argv[1].split(',')
+    # check_df = nft_profit_check(purr_top_list)
+    res = nft_profit_performance_check(performance_test_address)
+    print(res)
+    # check_df.to_excel('nft_profit_check.xlsx', sheet_name='nft_profit_check')
