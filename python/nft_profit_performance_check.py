@@ -9,7 +9,7 @@ tg_host = "192.168.100.151"
 tg_port = 9000
 graph_name = "nft_profit"
 tg_user = "data_analyst"
-tg_passwd = "uhdBEJa4zroToFr4Y8VbNJzsynHX9YeUXoCTi9MRe"
+tg_passwd = ""
 
 # purr_top_sql = """SELECT a.public_address
 # 	,GROUP_CONCAT( concat("'",lower(coalesce(b.address,a.public_address)),"'")) as address_list
