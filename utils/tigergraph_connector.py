@@ -8,7 +8,7 @@ load_dotenv()
 
 tg_test_host = os.getenv("TIGERGRAPH_TEST_HOST")
 tg_test_port = os.getenv("TIGERGRAPH_TEST_REST_SERVER_PORT")
-tg_user = os.getenv("TIGERGRAPH_USERNAME")
+tg_user = os.getenv("TIGERGRAPH_ANALYST_USERNAME")
 tg_pwd = os.getenv("TIGERGRAPH_ANALYST_PASSWORD")
 
 
@@ -37,7 +37,6 @@ class TigergraphClient(object):
         data = {'graph': self.graph_name}
         result = requests.post(url, json=data, auth=HTTPBasicAuth(self.user, self.passwd))
         result = result.json()
-        print(result)
         self.token = result['results']['token']
         self.expiration = result['expiration']
 
@@ -53,6 +52,5 @@ class TigergraphClient(object):
 
 if __name__ == '__main__':
     c = TigergraphClient('nft_profit')
-    print()
     # res = c.run_query('nft_profit_calculation', address="0xbb34d62e24def6543470a9fd1d05f70375ce5ec5")
     # print(res)
