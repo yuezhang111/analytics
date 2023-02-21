@@ -42,6 +42,15 @@ class BackfillNFTBalanceCost(object):
             block_bucket.append(row[0])
         return block_bucket
 
+    def get_latest_block_number(self):
+        blo_sql = """
+        SELECT max(block_number) as block_number
+        FROM dw.dws_nft_balance_eth as a
+        """
+        res_rows,_ = self.doris_db.read_sql(blo_sql)
+        block_number = res_rows[0][0]
+        return block_number
+
     @staticmethod
     def get_backfill_sql(start,end):
         backfill_sql = """
@@ -181,7 +190,7 @@ class BackfillNFTBalanceCost(object):
 def main():
     backfill_task = BackfillNFTBalanceCost()
     start_block = 0
-    end_block = 16667109
+    end_block = backfill_task.get_latest_block_number()
     finished_block = backfill_task.run_backfill(start_block,end_block)
     print(finished_block)
 
