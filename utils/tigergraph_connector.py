@@ -8,6 +8,8 @@ load_dotenv()
 
 tg_test_host = os.getenv("TIGERGRAPH_TEST_HOST")
 tg_test_port = os.getenv("TIGERGRAPH_TEST_REST_SERVER_PORT")
+tg_prod_host = os.getenv("TIGERGRAPH_PROD_HOST")
+tg_prod_port = os.getenv("TIGERGRAPH_PROD_REST_SERVER_PORT")
 tg_user = os.getenv("TIGERGRAPH_ANALYST_USERNAME")
 tg_pwd = os.getenv("TIGERGRAPH_ANALYST_PASSWORD")
 
@@ -43,14 +45,26 @@ class TigergraphClient(object):
     @with_token
     def run_query(self, query_name: str, **params):
         url = 'http://{}:{}/query/{}/{}'.format(self.host, self.rest_port, self.graph_name, query_name)
+        n = 0
+        for k,v in params.items():
+            if n == 0:
+                if isinstance(v,list):
+                    for i in range(len(v)):
+                        url += '?'+k+'='+v if i == 0 else '&'+k+'='+v
+                else:
+                    url += '?'+k+'='+v
+            else:
+                url += '&'+k+'='+v
+            n += 1
         headers = {
             'Authorization': 'Bearer {}'.format(self.token)
         }
-        result = requests.post(url, json=params, headers=headers)
+        print(url)
+        result = requests.post(url, headers=headers)
         return result.json()
 
 
 if __name__ == '__main__':
     c = TigergraphClient('nft_profit')
-    # res = c.run_query('nft_profit_calculation', address="0xbb34d62e24def6543470a9fd1d05f70375ce5ec5")
-    # print(res)
+    res = c.run_query('nft_profit_daily_log',address="0xbb34d62e24def6543470a9fd1d05f70375ce5ec5",dt_str="2022-05-29")
+    print(res)
